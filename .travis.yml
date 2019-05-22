@@ -1,0 +1,12 @@
+cache: cargo
+os:
+  - linux
+  - osx
+env:
+  - RUST_BACKTRACE=full
+matrix:
+  fast_finish: false
+language: rust
+rust:
+  - nightly
+script: cargo test --verbose
