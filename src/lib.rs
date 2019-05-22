@@ -48,7 +48,7 @@ impl<F, S> SendFile<F, S>
           S: AsRawFd,
 {
     #[cfg(target_os = "macos")]
-    fn raw_send_file(&mut self) -> io::Result<()> {
+    fn start_send_file(&mut self) -> io::Result<()> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
         // On macOS `length` is value-result parameter. It determines the number
@@ -65,7 +65,7 @@ impl<F, S> SendFile<F, S>
     }
 
     #[cfg(target_os = "linux")]
-    fn raw_send_file(&mut self) -> io::Result<()> {
+    fn start_send_file(&mut self) -> io::Result<()> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
         // FIXME(Thomas): Not sure what will happend for files larger then this count.
@@ -80,7 +80,7 @@ impl<F, S> SendFile<F, S>
     }
 
     #[cfg(target_os = "freebsd")]
-    fn raw_send_file(&mut self) -> io::Result<()> {
+    fn start_send_file(&mut self) -> io::Result<()> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
         let mut result = 0;
@@ -104,7 +104,7 @@ impl<F, S> Future for SendFile<F, S>
 
     fn poll(mut self: Pin<&mut Self>, _ctx: &mut task::Context) -> Poll<Self::Output> {
         loop {
-            match self.raw_send_file() {
+            match self.start_send_file() {
                 Ok(()) => break Poll::Ready(Ok(self.written as usize)),
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => break Poll::Pending,
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue, // Try again.
