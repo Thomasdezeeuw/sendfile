@@ -30,7 +30,7 @@ pub unsafe fn send_file<F, S>(file: F, socket: S) -> SendFile<F, S> {
 pub struct SendFile<F, S> {
     file: F,
     socket: S,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os="freebsd"))]
     written: libc::off_t,
     #[cfg(target_os = "linux")]
     written: libc::ssize_t,
@@ -78,9 +78,23 @@ impl<F, S> SendFile<F, S>
             Ok(())
         }
     }
+
+    #[cfg(target_os = "freebsd")]
+    fn raw_send_file(&mut self) -> io::Result<()> {
+        let file = self.file.as_raw_fd();
+        let socket = self.socket.as_raw_fd();
+        let mut result = 0;
+        let res = unsafe { libc::sendfile(file, socket, self.written, 0, ptr::null_mut(), &mut result, 0) };
+        self.written += result;
+        if res == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os="freebsd"))]
 impl<F, S> Future for SendFile<F, S>
     where F: AsRawFd + Unpin,
           S: AsRawFd + Unpin,
