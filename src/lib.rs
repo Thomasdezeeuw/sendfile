@@ -1,10 +1,9 @@
-use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
 use std::future::Future;
+use std::marker::Unpin;
+use std::os::unix::io::AsRawFd;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use std::ptr;
-use std::marker::Unpin;
+use std::{io, ptr};
 
 /// Send a `file` out a `socket`.
 ///
@@ -16,9 +15,9 @@ use std::marker::Unpin;
 ///
 /// # Unsafety
 ///
-/// This function is unsafe because the call must ensure that the provided
+/// This function is unsafe because the caller must ensure that the provided
 /// `file` and `socket` are usable in the `sendfile` system call. The
-/// requirements for these different between platforms.
+/// requirements for this system call are different between platforms.
 pub unsafe fn send_file<F, S>(file: F, socket: S) -> SendFile<F, S> {
     SendFile {
         file,
@@ -31,14 +30,35 @@ pub unsafe fn send_file<F, S>(file: F, socket: S) -> SendFile<F, S> {
 pub struct SendFile<F, S> {
     file: F,
     socket: S,
-    written: usize,
+    written: libc::off_t,
 }
 
 impl<F, S> SendFile<F, S> {
-
     /// Retrieve the file and socket.
     pub fn into_inner(self) -> (F, S) {
         (self.file, self.socket)
+    }
+}
+
+impl<F, S> SendFile<F, S>
+    where F: AsRawFd,
+          S: AsRawFd,
+{
+    #[cfg(target_os = "macos")]
+    fn raw_send_file(&mut self) -> io::Result<()> {
+        let file = self.file.as_raw_fd();
+        let socket = self.socket.as_raw_fd();
+        // On macOS `length` is value-result parameter. It determines the number
+        // of bytes to write and return the number of bytes written also in case
+        // of `EAGAIN` errors.
+        let mut length = 0; // Send all bytes.
+        let res = unsafe { libc::sendfile(file, socket, self.written, &mut length, ptr::null_mut(), 0) };
+        self.written += length;
+        if res == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -51,29 +71,13 @@ impl<F, S> Future for SendFile<F, S>
     type Output = io::Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, _ctx: &mut task::Context) -> Poll<Self::Output> {
-        let file = self.file.as_raw_fd();
-        let socket = self.socket.as_raw_fd();
         loop {
-            match raw_send_file(file, socket) {
-                Ok(n) => {
-                    self.written += n;
-                    // TODO: how to detect a partial write?
-                    break Poll::Ready(Ok(self.written));
-                },
+            match self.raw_send_file() {
+                Ok(()) => break Poll::Ready(Ok(self.written as usize)),
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => break Poll::Pending,
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue, // Try again.
                 Err(err) => break Poll::Ready(Err(err)),
             }
         }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn raw_send_file(file: RawFd, socket: RawFd) -> io::Result<usize> {
-    let mut result = 0;
-    if unsafe { libc::sendfile(file, socket, 0, &mut result, ptr::null_mut(), 0) } == -1 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(result as usize)
     }
 }

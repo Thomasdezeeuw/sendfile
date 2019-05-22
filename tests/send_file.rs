@@ -1,11 +1,14 @@
 use std::fs::File;
 use std::future::Future;
-use std::pin::Pin;
-use std::task::Poll;
 use std::io::{self, Read};
-use std::thread::{self, JoinHandle};
+use std::marker::Unpin;
 use std::net::{SocketAddr, TcpStream, TcpListener};
+use std::pin::Pin;
 use std::sync::mpsc::{channel, Receiver};
+use std::task::Poll;
+use std::thread::sleep;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use futures_test::task::noop_context;
 
@@ -59,6 +62,47 @@ fn tcp_blocking() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[test]
+fn tcp_blocking_non_blocking() -> io::Result<()> {
+    let server = tcp_server(TEST_FILES.len())?;
+
+    for test in TEST_FILES {
+        let file = File::open(test.path)?;
+        let stream = TcpStream::connect(server.address)?;
+        stream.set_nonblocking(true)?;
+
+        let mut send_file = unsafe { send_file(file, stream) };
+        let result = wait_loop(Pin::new(&mut send_file))?;
+        assert_eq!(result, test.data.len());
+
+        let (_, socket) = send_file.into_inner();
+        let local_address = socket.local_addr()?;
+        drop(socket); // Close the socket.
+
+        let (address, data) = server.send_files.recv().unwrap();
+        assert_eq!(local_address, address);
+        if data != test.data {
+            panic!("Retrieved different data then expected for {}", test.path);
+        }
+    }
+
+    Ok(())
+}
+
+/// A simple wait loop that completes the future.
+fn wait_loop<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
+    where Fut: Future + Unpin,
+{
+    let mut ctx = noop_context();
+
+    loop {
+        if let Poll::Ready(val) = future.as_mut().poll(&mut ctx) {
+            return val;
+        }
+        sleep(Duration::from_millis(10));
+    }
 }
 
 struct TcpServer {
