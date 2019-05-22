@@ -30,7 +30,10 @@ pub unsafe fn send_file<F, S>(file: F, socket: S) -> SendFile<F, S> {
 pub struct SendFile<F, S> {
     file: F,
     socket: S,
+    #[cfg(target_os = "macos")]
     written: libc::off_t,
+    #[cfg(target_os = "linux")]
+    written: libc::ssize_t,
 }
 
 impl<F, S> SendFile<F, S> {
@@ -60,9 +63,24 @@ impl<F, S> SendFile<F, S>
             Ok(())
         }
     }
+
+    #[cfg(target_os = "linux")]
+    fn raw_send_file(&mut self) -> io::Result<()> {
+        let file = self.file.as_raw_fd();
+        let socket = self.socket.as_raw_fd();
+        // FIXME(Thomas): Not sure what will happend for files larger then this count.
+        let count = libc::size_t::max_value() / 2;
+        let n = unsafe { libc::sendfile(socket, file, ptr::null_mut(), count) };
+        if n == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            self.written += n;
+            Ok(())
+        }
+    }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl<F, S> Future for SendFile<F, S>
     where F: AsRawFd + Unpin,
           S: AsRawFd + Unpin,
