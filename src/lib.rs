@@ -83,9 +83,12 @@ impl<F, S> SendFile<F, S>
     fn raw_send_file(&mut self) -> io::Result<()> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
-        let mut result = 0;
-        let res = unsafe { libc::sendfile(file, socket, self.written, 0, ptr::null_mut(), &mut result, 0) };
-        self.written += result;
+        let mut bytes_sent = 0;
+        let res = unsafe {
+            libc::sendfile(file, socket, self.written, 0,
+                ptr::null_mut(), &mut bytes_sent, 0)
+        };
+        self.written += bytes_sent;
         if res == -1 {
             Err(io::Error::last_os_error())
         } else {

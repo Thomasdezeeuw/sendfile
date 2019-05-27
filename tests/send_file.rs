@@ -6,8 +6,7 @@ use std::net::{SocketAddr, TcpStream, TcpListener};
 use std::pin::Pin;
 use std::sync::mpsc::{channel, Receiver};
 use std::task::Poll;
-use std::thread::sleep;
-use std::thread::{self, JoinHandle};
+use std::thread::{self, JoinHandle, sleep};
 use std::time::Duration;
 
 use futures_test::task::noop_context;
