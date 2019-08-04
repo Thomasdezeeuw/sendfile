@@ -69,6 +69,11 @@ impl<F, S> SendFile<F, S> {
     pub fn into_inner(self) -> (F, S) {
         (self.file, self.socket)
     }
+
+    /// Returns the number of bytes written.
+    pub fn written(&self) -> usize {
+        self.written as usize
+    }
 }
 
 impl<F, S> SendFile<F, S>
