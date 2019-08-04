@@ -1,3 +1,7 @@
+//! Crate that wraps the `sendfile` system call.
+//!
+//! To create a new [`SendFile`] [`Future`] see [`send_file`].
+
 use std::future::Future;
 use std::marker::Unpin;
 use std::os::unix::io::AsRawFd;
