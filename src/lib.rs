@@ -13,6 +13,10 @@ use std::{io, ptr};
 ///  * `socket` must be a socket, e.g. [`TcpStream`] or [`UdpSocket`], opened
 ///    for writing.
 ///
+/// [`File`]: std::fs::File
+/// [`TcpStream`]: std::net::TcpStream
+/// [`UdpSocket`]: std::net::UdpSocket
+///
 /// # Unsafety
 ///
 /// This function is unsafe because the caller must ensure that the provided
@@ -26,7 +30,27 @@ pub unsafe fn send_file<F, S>(file: F, socket: S) -> SendFile<F, S> {
     }
 }
 
-/// TODO: doc waking isn't done.
+/// Wrapper around the `sendfile` system call.
+///
+/// From the `sendfile` manual (`$ man sendfile 2`):
+///
+/// > `sendfile` copies data between one file descriptor and another. Because
+/// > this copying is done within the kernel, `sendfile` is more efficient than
+/// > the combination of read and write, which would require transferring data
+/// > to and from user space.
+///
+/// # Platform support
+///
+/// * Android.
+/// * [FreeBSD](https://www.freebsd.org/cgi/man.cgi?query=sendfile&manpath=FreeBSD+12.0-RELEASE+and+Ports).
+/// * [Linux](http://man7.org/linux/man-pages/man2/sendfile.2.html).
+/// * [macOS](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/sendfile.2.html).
+///
+/// # Notes
+///
+/// The [`Future`] implementation doesn't implement waking, it is up to the
+/// caller to ensure future is polled again once the socket is ready to receive
+/// more data.
 pub struct SendFile<F, S> {
     file: F,
     socket: S,
@@ -44,18 +68,20 @@ impl<F, S> SendFile<F, S> {
 }
 
 impl<F, S> SendFile<F, S>
-    where F: AsRawFd,
-          S: AsRawFd,
+where
+    F: AsRawFd,
+    S: AsRawFd,
 {
     #[cfg(target_os = "macos")]
     fn raw_send_file(&mut self) -> io::Result<()> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
         // On macOS `length` is value-result parameter. It determines the number
-        // of bytes to write and return the number of bytes written also in case
-        // of `EAGAIN` errors.
+        // of bytes to write and returns the number of bytes written also in
+        // case of `EAGAIN` errors.
         let mut length = 0; // Send all bytes.
-        let res = unsafe { libc::sendfile(file, socket, self.written, &mut length, ptr::null_mut(), 0) };
+        let res =
+            unsafe { libc::sendfile(file, socket, self.written, &mut length, ptr::null_mut(), 0) };
         self.written += length;
         if res == -1 {
             Err(io::Error::last_os_error())
@@ -68,7 +94,7 @@ impl<F, S> SendFile<F, S>
     fn raw_send_file(&mut self) -> io::Result<()> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
-        // FIXME(Thomas): Not sure what will happend for files larger then this count.
+        // FIXME(Thomas): Not sure what will happen for files larger then this count.
         let count = libc::size_t::max_value() / 2;
         let n = unsafe { libc::sendfile(socket, file, ptr::null_mut(), count) };
         if n == -1 {
@@ -85,8 +111,15 @@ impl<F, S> SendFile<F, S>
         let socket = self.socket.as_raw_fd();
         let mut bytes_sent = 0;
         let res = unsafe {
-            libc::sendfile(file, socket, self.written, 0,
-                ptr::null_mut(), &mut bytes_sent, 0)
+            libc::sendfile(
+                file,
+                socket,
+                self.written,
+                0,
+                ptr::null_mut(),
+                &mut bytes_sent,
+                0,
+            )
         };
         self.written += bytes_sent;
         if res == -1 {
@@ -97,10 +130,16 @@ impl<F, S> SendFile<F, S>
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "macos", target_os = "linux", target_os="freebsd"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "linux",
+    target_os = "macos",
+))]
 impl<F, S> Future for SendFile<F, S>
-    where F: AsRawFd + Unpin,
-          S: AsRawFd + Unpin,
+where
+    F: AsRawFd + Unpin,
+    S: AsRawFd + Unpin,
 {
     /// The number of bytes written, or an I/O error.
     type Output = io::Result<usize>;
