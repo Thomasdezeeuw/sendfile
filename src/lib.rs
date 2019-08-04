@@ -2,6 +2,25 @@
 //!
 //! To create a new [`SendFile`] [`Future`] see [`send_file`].
 
+#![warn(
+    anonymous_parameters,
+    bare_trait_objects,
+    missing_debug_implementations,
+    missing_docs,
+    rust_2018_idioms,
+    trivial_casts,
+    trivial_numeric_casts,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications,
+    unused_results,
+    variant_size_differences
+)]
+// Disallow warnings when running tests.
+#![cfg_attr(test, deny(warnings))]
+// Disallow warnings in examples.
+#![doc(test(attr(deny(warnings))))]
+
 use std::future::Future;
 use std::marker::Unpin;
 use std::os::unix::io::AsRawFd;
@@ -55,6 +74,7 @@ pub unsafe fn send_file<F, S>(file: F, socket: S) -> SendFile<F, S> {
 /// The [`Future`] implementation doesn't implement waking, it is up to the
 /// caller to ensure future is polled again once the socket is ready to receive
 /// more data.
+#[derive(Debug)]
 pub struct SendFile<F, S> {
     file: F,
     socket: S,
@@ -153,7 +173,7 @@ where
     /// The number of bytes written, or an I/O error.
     type Output = io::Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, _ctx: &mut task::Context) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<Self::Output> {
         loop {
             match self.raw_send_file() {
                 Ok(()) => break Poll::Ready(Ok(self.written as usize)),
