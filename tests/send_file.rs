@@ -2,11 +2,11 @@ use std::fs::File;
 use std::future::Future;
 use std::io::{self, Read};
 use std::marker::Unpin;
-use std::net::{SocketAddr, TcpStream, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::pin::Pin;
 use std::sync::mpsc::{channel, Receiver};
 use std::task::Poll;
-use std::thread::{self, JoinHandle, sleep};
+use std::thread::{self, sleep, JoinHandle};
 use std::time::Duration;
 
 use futures_test::task::noop_context;
@@ -49,8 +49,11 @@ fn tcp_blocking() -> io::Result<()> {
 
         let mut send_file = unsafe { send_file(file, stream) };
 
+        // Should write the entire file in a single call in blocking mode.
         let result = Pin::new(&mut send_file).poll(&mut ctx)?;
-        assert_eq!(result, Poll::Ready(test.data.len()));
+        assert!(result.is_ready());
+        assert_eq!(send_file.written(), test.data.len());
+
         let (_, socket) = send_file.into_inner();
         let local_address = socket.local_addr()?;
         drop(socket); // Close the socket.
@@ -73,8 +76,8 @@ fn tcp_blocking_non_blocking() -> io::Result<()> {
         stream.set_nonblocking(true)?;
 
         let mut send_file = unsafe { send_file(file, stream) };
-        let result = wait_loop(Pin::new(&mut send_file))?;
-        assert_eq!(result, test.data.len());
+        wait_loop(Pin::new(&mut send_file))?;
+        assert_eq!(send_file.written(), test.data.len());
 
         let (_, socket) = send_file.into_inner();
         let local_address = socket.local_addr()?;
@@ -92,7 +95,8 @@ fn tcp_blocking_non_blocking() -> io::Result<()> {
 
 /// A simple wait loop that completes the future.
 fn wait_loop<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
-    where Fut: Future + Unpin,
+where
+    Fut: Future + Unpin,
 {
     let mut ctx = noop_context();
 
@@ -115,7 +119,11 @@ struct TcpServer {
 
 impl Drop for TcpServer {
     fn drop(&mut self) {
-        self.handle.take().unwrap().join().expect("error waiting for TcpServer thread");
+        self.handle
+            .take()
+            .unwrap()
+            .join()
+            .expect("error waiting for TcpServer thread");
     }
 }
 
@@ -129,7 +137,9 @@ fn tcp_server(n_connections: usize) -> io::Result<TcpServer> {
         for _ in 0..n_connections {
             let (mut stream, address) = listener.accept().expect("unable to accept connection");
             let mut buf = Vec::new();
-            stream.read_to_end(&mut buf).expect("unable to read from connection");
+            stream
+                .read_to_end(&mut buf)
+                .expect("unable to read from connection");
             sender.send((address, buf)).expect("unable to send result");
         }
     });

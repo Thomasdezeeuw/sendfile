@@ -22,11 +22,11 @@
 #![doc(test(attr(deny(warnings))))]
 
 use std::future::Future;
+use std::io;
 use std::marker::Unpin;
 use std::os::unix::io::AsRawFd;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use std::{io, ptr};
 
 /// Send a `file` out a `socket`.
 ///
@@ -78,10 +78,7 @@ pub unsafe fn send_file<F, S>(file: F, socket: S) -> SendFile<F, S> {
 pub struct SendFile<F, S> {
     file: F,
     socket: S,
-    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    written: libc::off_t,
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    written: libc::ssize_t,
+    written: usize,
 }
 
 impl<F, S> SendFile<F, S> {
@@ -92,7 +89,7 @@ impl<F, S> SendFile<F, S> {
 
     /// Returns the number of bytes written.
     pub fn written(&self) -> usize {
-        self.written as usize
+        self.written
     }
 }
 
@@ -102,40 +99,49 @@ where
     S: AsRawFd,
 {
     #[cfg(target_os = "macos")]
-    fn raw_send_file(&mut self) -> io::Result<()> {
+    fn raw_send_file(&mut self) -> io::Result<usize> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
         // On macOS `length` is value-result parameter. It determines the number
         // of bytes to write and returns the number of bytes written also in
         // case of `EAGAIN` errors.
         let mut length = 0; // Send all bytes.
-        let res =
-            unsafe { libc::sendfile(file, socket, self.written, &mut length, ptr::null_mut(), 0) };
-        self.written += length;
+        let res = unsafe {
+            libc::sendfile(
+                file,
+                socket,
+                self.written as libc::off_t,
+                &mut length,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        self.written += length as usize;
         if res == -1 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(())
+            Ok(length as usize)
         }
     }
 
     #[cfg(any(target_os = "android", target_os = "linux"))]
-    fn raw_send_file(&mut self) -> io::Result<()> {
+    fn raw_send_file(&mut self) -> io::Result<usize> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
-        // FIXME(Thomas): Not sure what will happen for files larger then this count.
-        let count = libc::size_t::max_value() / 2;
-        let n = unsafe { libc::sendfile(socket, file, ptr::null_mut(), count) };
+        // This is the maximum the Linux kernel will write in a single call.
+        let count = 0x7ffff000;
+        let mut offset = self.written as libc::off_t;
+        let n = unsafe { libc::sendfile(socket, file, &mut offset, count) };
         if n == -1 {
             Err(io::Error::last_os_error())
         } else {
-            self.written += n;
-            Ok(())
+            self.written = offset as usize;
+            Ok(n as usize)
         }
     }
 
     #[cfg(target_os = "freebsd")]
-    fn raw_send_file(&mut self) -> io::Result<()> {
+    fn raw_send_file(&mut self) -> io::Result<usize> {
         let file = self.file.as_raw_fd();
         let socket = self.socket.as_raw_fd();
         let mut bytes_sent = 0;
@@ -143,18 +149,18 @@ where
             libc::sendfile(
                 file,
                 socket,
-                self.written,
+                self.written as libc::off_t,
                 0,
-                ptr::null_mut(),
+                std::ptr::null_mut(),
                 &mut bytes_sent,
                 0,
             )
         };
-        self.written += bytes_sent;
+        self.written += bytes_sent as usize;
         if res == -1 {
             Err(io::Error::last_os_error())
         } else {
-            Ok(())
+            Ok(bytes_sent as usize)
         }
     }
 }
@@ -171,12 +177,13 @@ where
     S: AsRawFd + Unpin,
 {
     /// The number of bytes written, or an I/O error.
-    type Output = io::Result<usize>;
+    type Output = io::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<Self::Output> {
         loop {
             match self.raw_send_file() {
-                Ok(()) => break Poll::Ready(Ok(self.written as usize)),
+                Ok(0) => break Poll::Ready(Ok(())),
+                Ok(_) => continue, // Attempt to write some more bytes.
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => break Poll::Pending,
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue, // Try again.
                 Err(err) => break Poll::Ready(Err(err)),
