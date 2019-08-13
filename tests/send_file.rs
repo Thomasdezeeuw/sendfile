@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use futures_test::task::noop_context;
 
-use send_file::send_file;
+use sendfile::send_file;
 
 #[derive(Debug)]
 struct TestFile {
