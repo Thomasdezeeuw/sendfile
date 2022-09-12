@@ -19,4 +19,4 @@ libc = "0.2.44"
 log  = "0.4.6"
 
 [dev-dependencies]
-futures-test-preview = "0.3.0-alpha.18"
+futures-test = "0.3.0"
